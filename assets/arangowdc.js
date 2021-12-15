@@ -93,6 +93,33 @@
     });
   }
 
+  function fetchAllAsync(query, table, schema) {
+      console.log('Fetching all items async for table "' + table.tableInfo.id + '"...');
+      var headers = new Headers();
+      headers.append("authorization", getAuthorization());
+      headers.append("x-arango-async", "store");
+
+      return fetch("../_api/cursor", {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify({
+              query: query,
+          }),
+      }).then(function (response) {
+          let jobId = response.headers.get('X-Arango-Async-Id');
+          return fetchJob(jobId).then(function (response) {
+            return response.json().then(function (body) {
+              response._body = body;
+              return response;
+            });
+          })
+            .then(function (response){
+              return consumeCursorResult(response._body, table, schema, 0);
+            })
+
+      });
+    }
+
   function fetchAllIncremental(query, table, schema, offset, fullCount) {
     if (!offset) offset = 0;
     console.log(
@@ -180,6 +207,18 @@
           );
         }
       );
+    } else if (query.async || isQueryAsync(query.query)) {
+        return fetchAllAsync(query.query, table, query.schema).then(
+            function (count) {
+                console.log(
+                    "Done fetching all async" +
+                    count +
+                    ' items for table "' +
+                    table.tableInfo.id +
+                    '".'
+                );
+            }
+        );
     } else {
       return fetchAllNonIncremental(query.query, table, query.schema).then(
         function (count) {
@@ -287,6 +326,13 @@
             (query.incremental ? "" : "not ") +
             "incremental"
         );
+        console.log(
+            'Query "' +
+            query.id +
+            '" is ' +
+            (query.async ? "" : "not ") +
+            "using asynchronous connection"
+        );
         return {
           id: query.id,
           alias: query.alias,
@@ -379,6 +425,7 @@
                 id: queryId[i],
                 alias: queryAlias[i],
                 query: queryAql[i],
+                qAsync: isQueryAsync(queryAql[i]),
                 incremental: response._body.bindVars[0] === "OFFSET",
               });
             });
@@ -391,31 +438,9 @@
             console.log("Inferring schema for query #" + i + " ...");
             var query = queries[i].query;
             var incremental = queries[i].incremental;
-            return fetch("../_api/cursor", {
-              method: "POST",
-              headers: headers,
-              body: JSON.stringify({
-                query: query,
-                bindVars: incremental ? { OFFSET: 0 } : undefined,
-                batchSize: 1,
-              }),
-            })
-              .then(function (response) {
-                return response.json().then(function (body) {
-                  response._body = body;
-                  return response;
-                });
-              })
-              .then(function (response) {
-                queries[i].schema = inferSchema(response._body.result[0]);
-                if (response._body.id) {
-                  console.log("Disposing of cursor ...");
-                  return fetch("../_api/cursor/" + response._body.id, {
-                    method: "DELETE",
-                    headers: headers,
-                  });
-                }
-              });
+            var qAsync = queries[i].qAsync;
+            console.log("Inferring schema for query #" + i + " with async status " + qAsync);
+            return qAsync ? inferringSchemaAsync(query, queries, i) : inferringSchemaBase(query, incremental, queries, i)
           });
         }, Promise.resolve());
       })
@@ -430,5 +455,88 @@
       .catch(function (error) {
         errorsDiv.innerHTML = error.message;
       });
+  }
+
+  function inferringSchemaBase(query, incremental, queries, i) {
+      var headers = new Headers();
+      headers.append("authorization", getAuthorization());
+
+      return fetch("../_api/cursor", {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify({
+              query: query,
+              bindVars: incremental ? { OFFSET: 0 } : undefined,
+              batchSize: 1,
+          }),
+      })
+          .then(function (response) {
+              return response.json().then(function (body) {
+                  response._body = body;
+                  return response;
+              });
+          })
+          .then(function (response) {
+              queries[i].schema = inferSchema(response._body.result[0]);
+              if (response._body.id) {
+                  console.log("Disposing of cursor ...");
+                  return fetch("../_api/cursor/" + response._body.id, {
+                      method: "DELETE",
+                      headers: headers,
+                  });
+              }
+          });
+  }
+
+  function inferringSchemaAsync(query, queries, i) {
+    var headersAuth = new Headers();
+    headersAuth.append("authorization", getAuthorization());
+
+    var headers = new Headers();
+    headers.append("authorization", getAuthorization());
+    headers.append("x-arango-async", "store");
+
+    return fetch("../_api/cursor", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({
+        query: query,
+        batchSize: 1,
+      }),
+    })
+        .then(function (response) {
+          let jobId = response.headers.get('X-Arango-Async-Id');
+          return fetchJob(jobId)
+        })
+        .then(function (response) {
+          return response.json().then(function (body) {
+            response._body = body;
+            return response;
+          });
+        })
+        .then(function (response) {
+          queries[i].schema = inferSchema(response._body.result[0]);
+        });
+
+  }
+
+  function fetchJob(jobId) {
+    var headers = new Headers();
+    headers.append("authorization", getAuthorization());
+    return fetch("../_api/job/" + jobId, {
+      method: "PUT",
+      headers: headers
+    }).then(function(response) {
+        console.log(response)
+        if (response.status === 201) {
+            return response
+        } else {
+            return fetchJob(jobId)
+        }
+    })
+  }
+
+  function isQueryAsync(query) {
+    return query.search("//ASYNC") !== -1
   }
 })();

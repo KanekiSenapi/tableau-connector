@@ -25,6 +25,10 @@
         Use <code>@OFFSET</code> for incremental fetching, e.g.
         <code>LIMIT @OFFSET, 100</code> to fetch 100 results at a time.
       </div>
+      <div class="notice">
+        Use <code>//ASYNC</code> at start of query for async fetching.
+        Use it only without incremental fetching.
+      </div>
       <button id="add-query" type="button">Add table</button>
       <button type="submit">Extract</button>
     </form>
